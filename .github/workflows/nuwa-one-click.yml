@@ -1,0 +1,222 @@
+name: NUWA One-Click Build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  dispatch-nuwa-build:
+    name: Prepare latest WildKernels and start nuwa build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Show fixed nuwa configuration
+        shell: bash
+        run: |
+          echo "Device: nuwa"
+          echo "Model: 2210132G"
+          echo "ROM: OS3.0.311.0.WMBCNXM"
+          echo "Kernel family: 5.15.x-android13"
+          echo "Kernel sublevel: 194"
+          echo "Patch level: 2025-12"
+          echo "Page size: 4k"
+          echo "Root flavor: KernelSU-Next"
+          echo "SUSFS: true"
+          echo "NoMount: false"
+          echo "Optional features: false"
+
+      - name: Clone latest WildKernels upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git clone \
+            --depth 1 \
+            --branch main \
+            https://github.com/WildKernels/GKI_KernelSU_SUSFS.git \
+            upstream
+
+          cd upstream
+
+          echo "UPSTREAM_SHA=$(git rev-parse HEAD)" \
+            | tee "$GITHUB_STEP_SUMMARY"
+
+          echo "UPSTREAM_DATE=$(git show -s --format=%cI HEAD)" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+
+          echo "UPSTREAM_SUBJECT=$(git show -s --format=%s HEAD)" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify nuwa kernel baseline exists
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CONFIG="upstream/.github/config/android13-5.15.json"
+
+          test -f "$CONFIG"
+
+          python3 - "$CONFIG" <<'PY'
+          import json
+          import sys
+
+          path = sys.argv[1]
+
+          with open(path, "r", encoding="utf-8") as f:
+              data = json.load(f)
+
+          found = False
+
+          def walk(value):
+              global found
+
+              if isinstance(value, dict):
+                  if str(value.get("sublevel", "")) == "194":
+                      found = True
+                      print("Found sublevel 194:")
+                      print(json.dumps(value, indent=2))
+
+                  for child in value.values():
+                      walk(child)
+
+              elif isinstance(value, list):
+                  for child in value:
+                      walk(child)
+
+          walk(data)
+
+          if not found:
+              raise SystemExit(
+                  "ERROR: android13-5.15 sublevel 194 was not found"
+              )
+          PY
+
+      - name: Push exact upstream commit to build branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd upstream
+
+          git remote add fork \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+          git push \
+            --force \
+            fork \
+            HEAD:refs/heads/nuwa-auto-latest
+
+          LOCAL_SHA="$(git rev-parse HEAD)"
+
+          REMOTE_SHA="$(
+            git ls-remote \
+              fork \
+              refs/heads/nuwa-auto-latest \
+            | awk '{print $1}'
+          )"
+
+          echo "LOCAL_SHA=$LOCAL_SHA"
+          echo "REMOTE_SHA=$REMOTE_SHA"
+
+          if [ "$LOCAL_SHA" != "$REMOTE_SHA" ]; then
+            echo "ERROR: fork branch does not match upstream"
+            exit 1
+          fi
+
+          {
+            echo ""
+            echo "## Source verification"
+            echo ""
+            echo "- Upstream commit: \`$LOCAL_SHA\`"
+            echo "- Fork branch commit: \`$REMOTE_SHA\`"
+            echo "- Match: **yes**"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Dispatch fixed KernelSU Next and SUSFS build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          gh workflow run main.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref nuwa-auto-latest \
+            -f release_type=CI \
+            -f use_cache=false \
+            -f allow_version_mismatch=false \
+            -f kernel_build_version=5.15.x-android13 \
+            -f os_patch_level=2025-12 \
+            -f page_size=4k \
+            -f root_flavor=KernelSU-Next \
+            -f use_susfs=true \
+            -f use_nomount=false \
+            -f use_bbg=false \
+            -f use_net=false \
+            -f use_ds=false \
+            -f use_ntsync=false \
+            -f use_ptrace=false \
+            -f use_unicode=false \
+            -f use_bpf=false \
+            -f use_perf=false \
+            -f test_release_notes=false
+
+      - name: Find dispatched build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sleep 10
+
+          echo "Recent runs for nuwa-auto-latest:"
+
+          gh run list \
+            --repo "$GITHUB_REPOSITORY" \
+            --workflow main.yml \
+            --branch nuwa-auto-latest \
+            --limit 5
+
+          RUN_ID="$(
+            gh run list \
+              --repo "$GITHUB_REPOSITORY" \
+              --workflow main.yml \
+              --branch nuwa-auto-latest \
+              --limit 1 \
+              --json databaseId \
+              --jq '.[0].databaseId'
+          )"
+
+          if [ -z "$RUN_ID" ] || [ "$RUN_ID" = "null" ]; then
+            echo "ERROR: build run was not found"
+            exit 1
+          fi
+
+          RUN_URL="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}"
+
+          {
+            echo ""
+            echo "## NUWA build started"
+            echo ""
+            echo "- Run ID: \`$RUN_ID\`"
+            echo "- Build URL: $RUN_URL"
+            echo ""
+            echo "### Fixed configuration"
+            echo ""
+            echo "- Kernel: \`5.15.x-android13\`"
+            echo "- Patch level: \`2025-12\`"
+            echo "- Page size: \`4k\`"
+            echo "- Root: \`KernelSU-Next\`"
+            echo "- SUSFS: \`true\`"
+            echo "- NoMount: \`false\`"
+            echo "- Optional features: \`false\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "Build URL: $RUN_URL"
