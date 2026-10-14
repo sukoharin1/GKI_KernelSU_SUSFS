@@ -1,4 +1,4 @@
-name: AKITA One-Click Build
+name: AKITA One-Click Build09
 
 on:
   workflow_dispatch:
