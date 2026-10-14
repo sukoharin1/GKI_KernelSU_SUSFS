@@ -1,0 +1,154 @@
+name: AKITA One-Click Build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  start-akita-build:
+    name: Start fixed Pixel 8a KernelSU Next and SUSFS build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Show fixed Pixel 8a configuration
+        shell: bash
+        run: |
+          {
+            echo "## Pixel 8a / akita fixed build configuration"
+            echo ""
+            echo "- Device: \`akita\`"
+            echo "- Product: \`Google Pixel 8a\`"
+            echo "- Architecture: \`arm64 / aarch64\`"
+            echo "- Stock kernel: \`6.1.145-android14-11\`"
+            echo "- KMI: \`6.1-android14-11\`"
+            echo "- Kernel family: \`6.1.x-android14\`"
+            echo "- Linux sublevel: \`145\`"
+            echo "- Patch level: \`2025-09\`"
+            echo "- Page size: \`4k\`"
+            echo "- Root flavor: \`KernelSU-Next\`"
+            echo "- SUSFS: \`true\`"
+            echo "- NoMount: \`false\`"
+            echo "- Optional features: \`false\`"
+            echo "- Cache: \`false\`"
+            echo "- Version mismatch: \`false\`"
+            echo ""
+            echo "This workflow only dispatches a kernel build."
+            echo "It does not connect to or flash the device."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify required workflow exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          gh workflow view main.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --yaml \
+            > main-workflow.yml
+
+          grep -q "workflow_dispatch:" main-workflow.yml
+
+          echo "MAIN_WORKFLOW_FOUND=true"
+
+      - name: Dispatch fixed KernelSU Next and SUSFS build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          gh workflow run main.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            -f release_type=CI \
+            -f use_cache=false \
+            -f allow_version_mismatch=false \
+            -f kernel_build_version=6.1.x-android14 \
+            -f os_patch_level=2025-09 \
+            -f page_size=4k \
+            -f root_flavor=KernelSU-Next \
+            -f use_susfs=true \
+            -f use_nomount=false \
+            -f use_bbg=false \
+            -f use_net=false \
+            -f use_ds=false \
+            -f use_ntsync=false \
+            -f use_ptrace=false \
+            -f use_unicode=false \
+            -f use_bpf=false \
+            -f use_perf=false \
+            -f test_release_notes=false
+
+          echo "DISPATCH_REQUEST_SENT=true"
+
+      - name: Find dispatched Build Kernels run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          RUN_ID=""
+
+          for attempt in $(seq 1 30)
+          do
+            sleep 5
+
+            RUN_ID="$(
+              gh run list \
+                --repo "$GITHUB_REPOSITORY" \
+                --workflow main.yml \
+                --branch main \
+                --event workflow_dispatch \
+                --limit 1 \
+                --json databaseId \
+                --jq '.[0].databaseId // empty'
+            )"
+
+            if [ -n "$RUN_ID" ]
+            then
+              break
+            fi
+          done
+
+          if [ -z "$RUN_ID" ]
+          then
+            echo "ERROR: Could not find dispatched Build Kernels run"
+            exit 1
+          fi
+
+          RUN_URL="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}"
+
+          {
+            echo ""
+            echo "## Pixel 8a Build Kernels started"
+            echo ""
+            echo "- Run ID: \`$RUN_ID\`"
+            echo "- Build URL: $RUN_URL"
+            echo ""
+            echo "### Fixed configuration"
+            echo ""
+            echo "- Kernel family: \`6.1.x-android14\`"
+            echo "- Sublevel: \`145\`"
+            echo "- Patch level: \`2025-09\`"
+            echo "- Page size: \`4k\`"
+            echo "- Root: \`KernelSU-Next\`"
+            echo "- SUSFS: \`true\`"
+            echo "- NoMount: \`false\`"
+            echo "- Optional features: \`false\`"
+            echo ""
+            echo "### Expected artifact"
+            echo ""
+            echo "\`6.1.145-android14-2025-09-KernelSU-Next-AnyKernel3\`"
+            echo ""
+            echo "Open the Build URL and wait for Build Kernels to finish."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "RUN_ID=$RUN_ID"
+          echo "RUN_URL=$RUN_URL"
